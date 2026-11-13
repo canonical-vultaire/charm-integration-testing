@@ -60,23 +60,36 @@ VM_MOUNT="${SANDBOX_MOUNT:-/project}"
 VM_CPUS="${SANDBOX_CPUS:-8}"
 VM_MEMORY="${SANDBOX_MEMORY:-16G}"
 VM_DISK="${SANDBOX_DISK:-80G}"
+SANDBOX_BACKEND="${SANDBOX_BACKEND:-multipass}"
 [[ "$VM_MOUNT" = /* ]] || { echo "ERROR: SANDBOX_MOUNT must be an absolute path: $VM_MOUNT" >&2; exit 1; }
 [[ "$VM_MOUNT" != *"'"* ]] || { echo "ERROR: SANDBOX_MOUNT must not contain single quotes: $VM_MOUNT" >&2; exit 1; }
 [[ "$VM_MOUNT" != *":"* ]] || { echo "ERROR: SANDBOX_MOUNT must not contain colons: $VM_MOUNT" >&2; exit 1; }
 [[ "$VM_NAME" != *"'"* ]] || { echo "ERROR: SANDBOX_VM must not contain single quotes: $VM_NAME" >&2; exit 1; }
 
+case "$SANDBOX_BACKEND" in
+    multipass|lxd)
+        # shellcheck source=/dev/null
+        source "$DEV_DIR/bin/sandbox-backend-$SANDBOX_BACKEND.sh"
+        ;;
+    *)
+        echo "ERROR: unsupported SANDBOX_BACKEND '$SANDBOX_BACKEND' (choose multipass or lxd)." >&2
+        exit 1
+        ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 _vm_state() {
-    multipass info "$VM_NAME" --format json 2>/dev/null \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['$VM_NAME']['state'])" 2>/dev/null \
-        || echo "absent"
+    sandbox_backend_state "$VM_NAME"
 }
 
 _is_mounted() {
-    multipass info "$VM_NAME" --format json 2>/dev/null \
-        | python3 -c "import sys,json; mounts=json.load(sys.stdin)['info'][sys.argv[1]].get('mounts',{}); exit(0 if sys.argv[2] in mounts else 1)" "$VM_NAME" "$VM_MOUNT" 2>/dev/null
+    sandbox_backend_is_mounted "$VM_NAME" "$PROJECT_DIR" "$VM_MOUNT"
+}
+
+_check_backend() {
+    sandbox_backend_check "$VM_NAME"
 }
 
 # Ingest every host env var prefixed with SANDBOX_VAR_, strip the prefix, and
@@ -103,7 +116,7 @@ _vm_temp_files=()
 _cleanup_vm_temp_files() {
     local _status=$?
     if [ "${#_vm_temp_files[@]}" -gt 0 ]; then
-        if ! multipass exec "$VM_NAME" -- rm -f -- "${_vm_temp_files[@]}"; then
+        if ! sandbox_backend_exec "$VM_NAME" rm -f -- "${_vm_temp_files[@]}"; then
             echo "WARNING: could not remove temporary files inside '$VM_NAME'." >&2
         fi
     fi
@@ -122,11 +135,11 @@ _vm_exec_with_env() {
     local -n _env="$1"
     shift
     local _env_file
-    _env_file=$(multipass exec "$VM_NAME" -- mktemp /tmp/sandbox-env-XXXXXX)
+    _env_file=$(sandbox_backend_exec "$VM_NAME" mktemp /tmp/sandbox-env-XXXXXX)
     _vm_temp_files+=("$_env_file")
     printf 'export %q\n' "${_env[@]}" \
-        | multipass exec "$VM_NAME" -- bash -c 'cat > "$1"' bash "$_env_file"
-    multipass exec "$VM_NAME" -- bash -c '
+        | sandbox_backend_exec "$VM_NAME" bash -c 'cat > "$1"' bash "$_env_file"
+    sandbox_backend_exec "$VM_NAME" bash -c '
         set -e
         source "$1"
         rm -f -- "$1"
@@ -145,7 +158,7 @@ _vm_exec_with_env() {
 # so Mise can resolve gh. Unset GH_TOKEN/GITHUB_TOKEN to ignore environment tokens.
 _vm_gh_logged_in() {
     [ "$(_vm_state)" = "Running" ] || return 1
-    multipass exec "$VM_NAME" -- bash -lc "
+    sandbox_backend_exec "$VM_NAME" bash -lc "
         unset GH_TOKEN GITHUB_TOKEN
         cd '$VM_MOUNT' && gh auth status --hostname github.com
     " &>/dev/null
@@ -262,7 +275,7 @@ _vm_gh_auth_login() {
         return 0
     fi
     echo "==> Authenticating gh inside the VM..."
-    if ! printf '%s\n' "$VM_GH_TOKEN" | multipass exec "$VM_NAME" -- bash -lc "
+    if ! printf '%s\n' "$VM_GH_TOKEN" | sandbox_backend_exec "$VM_NAME" bash -lc "
         unset GH_TOKEN GITHUB_TOKEN
         cd '$VM_MOUNT' && gh auth login --hostname github.com --with-token
     "; then
@@ -291,7 +304,9 @@ See development-sandbox/README.md for resume examples.
 
 Environment (.env keys):
   SANDBOX_VM             VM name override (default: charm-qa-sandbox)
+  SANDBOX_BACKEND        VM provider: multipass (default) or lxd
   SANDBOX_MOUNT          VM-side mount path (default: /project)
+  SANDBOX_LXD_REMOTE     Local LXD remote alias for the lxd backend (default: local)
   SANDBOX_CPUS           vCPU count for new VMs (default: 8)
   SANDBOX_MEMORY         RAM for new VMs, e.g. 8G or 16G (default: 16G)
   SANDBOX_DISK           Disk size for new VMs, e.g. 40G or 80G (default: 80G)
@@ -323,6 +338,7 @@ EOF
 # Subcommand: up
 # ---------------------------------------------------------------------------
 _cmd_up() {
+    _check_backend
     # Parse optional resource overrides; CLI flags take precedence over .env / defaults.
     local cpus="$VM_CPUS" memory="$VM_MEMORY" disk="$VM_DISK"
     while [ "$#" -gt 0 ]; do
@@ -367,28 +383,23 @@ _cmd_up() {
     case "$state" in
         absent)
             echo "==> Launching $VM_NAME (cpus=$cpus memory=$memory disk=$disk)..."
-            multipass launch 24.04 \
-                --name "$VM_NAME" \
-                --cpus "$cpus" \
-                --memory "$memory" \
-                --disk "$disk" \
-                --timeout 1800
+            sandbox_backend_launch "$VM_NAME" "$cpus" "$memory" "$disk"
             ;;
         Stopped)
             echo "==> Starting $VM_NAME..."
-            multipass start "$VM_NAME"
+            sandbox_backend_start "$VM_NAME"
             ;;
         Running)
             echo "==> $VM_NAME already running."
             ;;
         *)
             echo "==> VM is in state '$state', attempting to start..."
-            multipass start "$VM_NAME"
+            sandbox_backend_start "$VM_NAME"
             ;;
     esac
 
     echo "==> Checking bootstrap prerequisites..."
-    multipass exec "$VM_NAME" -- bash -c '
+    sandbox_backend_exec "$VM_NAME" bash -c '
         set -euo pipefail
         if ! command -v curl >/dev/null 2>&1 \
             || ! command -v git >/dev/null 2>&1 \
@@ -402,12 +413,12 @@ _cmd_up() {
     echo "==> Checking project mount..."
     if ! _is_mounted; then
         echo "==> Mounting $PROJECT_DIR -> $VM_MOUNT..."
-        multipass exec "$VM_NAME" -- bash -c "sudo mkdir -p '$VM_MOUNT' && sudo chown ubuntu:ubuntu '$VM_MOUNT'"
-        multipass mount "$PROJECT_DIR" "$VM_NAME:$VM_MOUNT"
+        sandbox_backend_exec "$VM_NAME" bash -c "sudo mkdir -p '$VM_MOUNT' && sudo chown ubuntu:ubuntu '$VM_MOUNT'"
+        sandbox_backend_mount "$VM_NAME" "$PROJECT_DIR" "$VM_MOUNT"
     fi
 
     echo "==> Setting up the sandbox environment..."
-    multipass exec "$VM_NAME" -- bash "$VM_MOUNT/development-sandbox/bin/install-mise.sh"
+    sandbox_backend_exec "$VM_NAME" bash "$VM_MOUNT/development-sandbox/bin/install-mise.sh"
     _env_args=("PROJECT_ROOT=$VM_MOUNT")
     _vm_exec_with_env _env_args bash -lc "
         set -euo pipefail
@@ -420,7 +431,7 @@ _cmd_up() {
 
     # Trust all folders in Copilot so it never prompts for folder confirmation.
     echo "==> Configuring Copilot trusted folders..."
-    multipass exec "$VM_NAME" -- bash -lc "
+    sandbox_backend_exec "$VM_NAME" bash -lc "
         mkdir -p ~/.copilot
         cat > ~/.copilot/config.json <<'JSON'
 {
@@ -452,11 +463,11 @@ JSON
     _VM_SIGNING_KEY_B64=$(grep '^SANDBOX_SIGNING_KEY=' "$_ENV_FILE" | cut -d= -f2-)
 
     # Install the signing key into the VM and generate the .pub file.
-    multipass exec "$VM_NAME" -- install -d -m 700 /home/ubuntu/.ssh
+    sandbox_backend_exec "$VM_NAME" install -d -m 700 /home/ubuntu/.ssh
     echo "$_VM_SIGNING_KEY_B64" | base64 -d \
-        | multipass exec "$VM_NAME" -- tee /home/ubuntu/.ssh/id_signing > /dev/null
-    multipass exec "$VM_NAME" -- chmod 600 /home/ubuntu/.ssh/id_signing
-    multipass exec "$VM_NAME" -- bash -c \
+        | sandbox_backend_exec "$VM_NAME" tee /home/ubuntu/.ssh/id_signing > /dev/null
+    sandbox_backend_exec "$VM_NAME" chmod 600 /home/ubuntu/.ssh/id_signing
+    sandbox_backend_exec "$VM_NAME" bash -c \
         "ssh-keygen -y -f /home/ubuntu/.ssh/id_signing > /home/ubuntu/.ssh/id_signing.pub"
 
     # Build the gitconfig: propagate host identity, strip signing config,
@@ -488,10 +499,10 @@ JSON
                 print "\t" setting " = " value
             }'
         printf '[user]\n\tsigningkey = /home/ubuntu/.ssh/id_signing\n[gpg]\n\tformat = ssh\n[commit]\n\tgpgsign = true\n[tag]\n\tgpgsign = true\n'
-    } | multipass exec "$VM_NAME" -- tee /home/ubuntu/.gitconfig > /dev/null
+    } | sandbox_backend_exec "$VM_NAME" tee /home/ubuntu/.gitconfig > /dev/null
 
     # Print the signing public key so the user can add it to GitHub.
-    _signing_pub=$(multipass exec "$VM_NAME" -- cat /home/ubuntu/.ssh/id_signing.pub)
+    _signing_pub=$(sandbox_backend_exec "$VM_NAME" cat /home/ubuntu/.ssh/id_signing.pub)
     echo ""
     echo "  *** VM signing key (add to GitHub if not already done) ***"
     echo "  https://github.com/settings/ssh  ->  New SSH key  ->  Key type: Signing Key"
@@ -587,8 +598,9 @@ JSON
 # Subcommand: down
 # ---------------------------------------------------------------------------
 _cmd_down() {
+    _check_backend
     echo "==> Stopping $VM_NAME..."
-    multipass stop "$VM_NAME"
+    sandbox_backend_stop "$VM_NAME"
     echo "==> Done. Run 'scripts/sandbox.sh up' to resume."
 }
 
@@ -596,6 +608,7 @@ _cmd_down() {
 # Subcommand: destroy
 # ---------------------------------------------------------------------------
 _cmd_destroy() {
+    _check_backend
     echo "This will permanently delete VM '$VM_NAME' and all its data."
     read -r -p "Type the VM name to confirm: " confirm
 
@@ -605,8 +618,7 @@ _cmd_destroy() {
     fi
 
     echo "==> Deleting $VM_NAME..."
-    multipass delete "$VM_NAME"
-    multipass purge
+    sandbox_backend_delete "$VM_NAME"
     echo "==> Done."
 }
 
@@ -614,6 +626,7 @@ _cmd_destroy() {
 # Subcommand: shell
 # ---------------------------------------------------------------------------
 _cmd_shell() {
+    _check_backend
     if ! _is_mounted; then
         echo "==> Mount '$VM_MOUNT' not found — run 'scripts/sandbox.sh up' first to mount the project."
         exit 1
@@ -689,6 +702,7 @@ EOF
         [ -n "$TASK" ] || { echo "Usage: scripts/sandbox.sh run 'task description'" >&2; exit 1; }
     fi
 
+    _check_backend
     if ! _is_mounted; then
         echo "==> Mount '$VM_MOUNT' not found — run 'scripts/sandbox.sh up' first to mount the project."
         exit 1
@@ -701,13 +715,13 @@ EOF
     _mcp_vm_file=""
     if [ -n "${SANDBOX_MCP_CONFIG_FILE:-}" ]; then
         echo "==> Copying MCP config into VM..."
-        _mcp_vm_file=$(multipass exec "$VM_NAME" -- bash -c "mktemp /tmp/mcp-config-XXXXXX.json")
+        _mcp_vm_file=$(sandbox_backend_exec "$VM_NAME" bash -c "mktemp /tmp/mcp-config-XXXXXX.json")
         _vm_temp_files+=("$_mcp_vm_file")
-        # Pipe rather than redirect: `multipass exec` hangs when its stdin is a regular file.
-        cat "$SANDBOX_MCP_CONFIG_FILE" | multipass exec "$VM_NAME" -- bash -c "cat > '$_mcp_vm_file'"
+        # Pipe rather than redirect so the backend exec command gets a pipe, not a regular file.
+        cat "$SANDBOX_MCP_CONFIG_FILE" | sandbox_backend_exec "$VM_NAME" bash -c "cat > '$_mcp_vm_file'"
     fi
 
-    PROMPT_FILE=$(multipass exec "$VM_NAME" -- bash -c "mktemp /tmp/copilot-prompt-XXXXXX")
+    PROMPT_FILE=$(sandbox_backend_exec "$VM_NAME" bash -c "mktemp /tmp/copilot-prompt-XXXXXX")
     _vm_temp_files+=("$PROMPT_FILE")
 
     {
@@ -715,7 +729,7 @@ EOF
         if [ -n "$TASK" ]; then
             printf "\n\n---\n\nTask: %s\n" "$TASK"
         fi
-    } | multipass exec "$VM_NAME" -- bash -c "cat > \"$PROMPT_FILE\""
+    } | sandbox_backend_exec "$VM_NAME" bash -c "cat > \"$PROMPT_FILE\""
 
     if [ "$INTERACTIVE" = "true" ]; then
         CONTEXT_MSG="Please read $PROMPT_FILE for project context, then await my instructions."

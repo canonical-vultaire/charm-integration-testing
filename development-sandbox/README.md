@@ -1,12 +1,14 @@
 # Development Sandbox
 
-A Multipass VM with Copilot and development tools for charm integration testing.
-Your checkout is mounted into the VM, so edits are visible on the host.
+A VM with Copilot and development tools for charm integration testing. Multipass
+is the default VM backend; Ubuntu hosts with LXD can select LXD instead. Your
+checkout is mounted into the VM, so edits are visible on the host.
 
 ## Quick start
 
-On an amd64 host with [Multipass](https://canonical.com/multipass) and
-[GitHub CLI](https://cli.github.com/) installed, run from the repository root:
+On an amd64 host with [GitHub CLI](https://cli.github.com/) installed and either
+[Multipass](https://canonical.com/multipass) (the default) or a configured local
+LXD installation, run from the repository root:
 
 ```bash
 cp development-sandbox/.env.sample development-sandbox/.env
@@ -14,6 +16,16 @@ cp development-sandbox/.env.sample development-sandbox/.env
 scripts/sandbox.sh up
 scripts/sandbox.sh run --interactive
 ```
+
+For LXD, set `SANDBOX_BACKEND=lxd` in `development-sandbox/.env` before running
+`up`. The host must have LXD 5.21 or newer initialized, a default storage pool
+configured, and the current user authorized to use the local LXD daemon. The
+LXD remote alias defaults to `local`; override it with `SANDBOX_LXD_REMOTE` if
+your local daemon uses another alias. Do not select a remote LXD server, because
+the project mount uses a host path.
+
+This selects LXD as the host-side VM provider. The `/setup-lxd` workflow remains
+separate; it configures the LXD substrate inside the sandbox VM for Juju testing.
 
 Ask Copilot to develop or test a validator, reproduce a failure, or review a PR.
 Skills such as `/setup-k8s`, `/setup-lxd`, `/develop-validator`, and `/test-validator`
@@ -66,7 +78,13 @@ Set options in `development-sandbox/.env` (gitignored). See
 | `SANDBOX_VAR_COPILOT_GITHUB_TOKEN` | Token for Copilot authentication |
 | `SANDBOX_VAR_COPILOT_MODEL` | Optional model override; otherwise Copilot CLI uses its default |
 | `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_DISK` | VM sizing at creation (defaults: `8` / `16G` / `80G`) |
+| `SANDBOX_BACKEND` | VM backend: `multipass` (default) or `lxd` |
+| `SANDBOX_LXD_REMOTE` | Local LXD remote alias for the LXD backend (default: `local`) |
 | `SANDBOX_VM` / `SANDBOX_MOUNT` | VM name and mount path; use a unique mount path for each checkout sharing a VM |
+
+The backends manage separate VMs even when they use the same VM name. Select the
+same backend for `up`, `shell`, `run`, `down`, and `destroy`. `destroy` permanently
+removes the VM from the selected backend.
 
 For read-only tasks, limit `SANDBOX_VAR_GITHUB_TOKEN` to the repositories you need:
 

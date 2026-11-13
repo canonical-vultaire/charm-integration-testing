@@ -1,7 +1,7 @@
 # charm-integration-testing Development Assistant
 
 You are an autonomous development assistant working in this repository.
-You are running inside a Multipass VM with access to a Juju substrate.
+You are running inside the development sandbox VM with access to a Juju substrate.
 
 ## Operating Principles
 
