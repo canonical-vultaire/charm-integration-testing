@@ -135,7 +135,6 @@ if [[ -f "$identity_file" ]]; then
         echo "ERROR: the LXD sandbox user no longer matches its recorded host UID:GID $identity." >&2
         exit 1
     fi
-    exit 0
 fi
 
 uid_entry=$(getent passwd "$host_uid" || true)
@@ -144,19 +143,21 @@ if [[ -n "$uid_entry" && "${uid_entry%%:*}" != ubuntu ]]; then
     exit 1
 fi
 
-if ! getent group "$host_gid" >/dev/null; then
-    group_name="sandbox-host-$host_gid"
-    while getent group "$group_name" >/dev/null; do
-        group_name="${group_name}-shared"
-    done
-    groupadd --gid "$host_gid" "$group_name"
-fi
-
 if [[ "$(id -u ubuntu)" != "$host_uid" ]]; then
     usermod --uid "$host_uid" ubuntu
 fi
-if [[ "$(id -g ubuntu)" != "$host_gid" ]]; then
+
+ubuntu_gid=$(id -g ubuntu)
+# Keep the ubuntu group itself aligned when the host GID is available.
+if ! getent group "$host_gid" >/dev/null; then
+    groupmod --gid "$host_gid" ubuntu
+    usermod --gid ubuntu ubuntu
+else
     usermod --gid "$host_gid" ubuntu
+fi
+# Preserve the group ownership of the VM-local ubuntu home after groupmod.
+if [[ "$ubuntu_gid" != "$host_gid" ]]; then
+    find /home/ubuntu -xdev -gid "$ubuntu_gid" -exec chgrp -h "$host_gid" {} +
 fi
 
 install -d -m 755 /var/lib/charm-integration-testing
