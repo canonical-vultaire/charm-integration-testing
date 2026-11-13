@@ -397,6 +397,8 @@ _cmd_up() {
             sandbox_backend_start "$VM_NAME"
             ;;
     esac
+    sandbox_backend_wait_ready "$VM_NAME"
+    sandbox_backend_prepare_user "$VM_NAME" "$(id -u)" "$(id -g)"
 
     echo "==> Checking bootstrap prerequisites..."
     sandbox_backend_exec "$VM_NAME" bash -c '
@@ -415,6 +417,11 @@ _cmd_up() {
         echo "==> Mounting $PROJECT_DIR -> $VM_MOUNT..."
         sandbox_backend_exec "$VM_NAME" bash -c "sudo mkdir -p '$VM_MOUNT' && sudo chown ubuntu:ubuntu '$VM_MOUNT'"
         sandbox_backend_mount "$VM_NAME" "$PROJECT_DIR" "$VM_MOUNT"
+    fi
+    if ! sandbox_backend_check_mount_writable "$VM_NAME" "$VM_MOUNT"; then
+        echo "ERROR: project mount '$VM_MOUNT' is not writable by the sandbox user." >&2
+        echo "       Check host checkout permissions and whether the backend preserves a writable host mount." >&2
+        exit 1
     fi
 
     echo "==> Setting up the sandbox environment..."

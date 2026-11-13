@@ -18,6 +18,10 @@ sandbox_backend_is_mounted() {
         | python3 -c "import sys,json; mounts=json.load(sys.stdin)['info'][sys.argv[1]].get('mounts',{}); exit(0 if sys.argv[2] in mounts else 1)" "$1" "$3" 2>/dev/null
 }
 
+sandbox_backend_check_mount_writable() {
+    sandbox_backend_exec "$1" test -w "$2"
+}
+
 sandbox_backend_launch() {
     local name=$1 cpus=$2 memory=$3 disk=$4
     multipass launch 24.04 \
@@ -34,6 +38,14 @@ sandbox_backend_start() {
 
 sandbox_backend_stop() {
     multipass stop "$1"
+}
+
+sandbox_backend_wait_ready() {
+    :
+}
+
+sandbox_backend_prepare_user() {
+    :
 }
 
 sandbox_backend_delete() {

@@ -70,6 +70,10 @@ sandbox_backend_is_mounted() {
     [[ "$source" == "$2" && "$path" == "$3" ]]
 }
 
+sandbox_backend_check_mount_writable() {
+    sandbox_backend_exec "$1" test -w "$2"
+}
+
 sandbox_backend_launch() {
     local target
     target=$(_sandbox_lxd_target "$1")
@@ -78,7 +82,6 @@ sandbox_backend_launch() {
         --config "limits.cpu=$2" \
         --config "limits.memory=$(_sandbox_lxd_size "$3")" \
         --device "root,size=$(_sandbox_lxd_size "$4")"
-    lxc exec "$target" -- cloud-init status --wait
 }
 
 sandbox_backend_start() {
@@ -87,6 +90,80 @@ sandbox_backend_start() {
 
 sandbox_backend_stop() {
     lxc stop "$(_sandbox_lxd_target "$1")"
+}
+
+sandbox_backend_wait_ready() {
+    local target start timeout=300
+    target=$(_sandbox_lxd_target "$1")
+    start=$SECONDS
+    echo "==> Waiting for LXD VM agent..."
+    # LXD can return from launch before its guest agent is ready to accept exec.
+    until lxc exec "$target" -- true >/dev/null 2>&1; do
+        if (( SECONDS - start >= timeout )); then
+            echo "ERROR: LXD VM agent did not become ready within ${timeout}s." >&2
+            return 1
+        fi
+        sleep 2
+    done
+    echo "==> LXD VM agent is ready."
+    lxc exec "$target" -- cloud-init status --wait
+}
+
+sandbox_backend_prepare_user() {
+    local target
+    target=$(_sandbox_lxd_target "$1")
+    echo "==> Checking LXD VM ubuntu identity against host UID:GID $2:$3..."
+    lxc exec "$target" -- bash -c '
+set -euo pipefail
+host_uid=$1
+host_gid=$2
+if [[ ! "$host_uid" =~ ^[1-9][0-9]*$ || ! "$host_gid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: LXD checkout sharing requires non-root host UID and GID values." >&2
+    exit 1
+fi
+
+identity_file=/var/lib/charm-integration-testing/sandbox-host-identity
+identity="$host_uid:$host_gid"
+if [[ -f "$identity_file" ]]; then
+    current_identity=$(cat "$identity_file")
+    if [[ "$current_identity" != "$identity" ]]; then
+        echo "ERROR: this LXD sandbox is configured for host UID:GID $current_identity, not $identity." >&2
+        echo "       Use a different SANDBOX_VM or recreate this VM for the current host user." >&2
+        exit 1
+    fi
+    if [[ "$(id -u ubuntu):$(id -g ubuntu)" != "$identity" ]]; then
+        echo "ERROR: the LXD sandbox user no longer matches its recorded host UID:GID $identity." >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+uid_entry=$(getent passwd "$host_uid" || true)
+if [[ -n "$uid_entry" && "${uid_entry%%:*}" != ubuntu ]]; then
+    echo "ERROR: host UID $host_uid belongs to '${uid_entry%%:*}' in the LXD VM; cannot align ubuntu." >&2
+    exit 1
+fi
+
+if ! getent group "$host_gid" >/dev/null; then
+    group_name="sandbox-host-$host_gid"
+    while getent group "$group_name" >/dev/null; do
+        group_name="${group_name}-shared"
+    done
+    groupadd --gid "$host_gid" "$group_name"
+fi
+
+if [[ "$(id -u ubuntu)" != "$host_uid" ]]; then
+    usermod --uid "$host_uid" ubuntu
+fi
+if [[ "$(id -g ubuntu)" != "$host_gid" ]]; then
+    usermod --gid "$host_gid" ubuntu
+fi
+
+install -d -m 755 /var/lib/charm-integration-testing
+printf "%s\n" "$identity" > "$identity_file.tmp"
+chmod 600 "$identity_file.tmp"
+mv "$identity_file.tmp" "$identity_file"
+' bash "$2" "$3"
 }
 
 sandbox_backend_delete() {

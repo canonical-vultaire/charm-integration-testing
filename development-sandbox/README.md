@@ -24,6 +24,10 @@ LXD remote alias defaults to `local`; override it with `SANDBOX_LXD_REMOTE` if
 your local daemon uses another alias. Do not select a remote LXD server, because
 the project mount uses a host path.
 
+To keep that host-path mount writable in both directions, the LXD backend aligns
+the VM's `ubuntu` UID/GID with the host account on first setup. That identity is
+pinned to the VM; use a different `SANDBOX_VM` for another host account.
+
 This selects LXD as the host-side VM provider. The `/setup-lxd` workflow remains
 separate; it configures the LXD substrate inside the sandbox VM for Juju testing.
 
