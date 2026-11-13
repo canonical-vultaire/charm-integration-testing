@@ -11,6 +11,9 @@ Install and configure LXD inside the sandbox VM and register it as a Juju
 cloud so that a Juju controller can be bootstrapped against it for machine
 charm deployments.
 
+This nested-LXD workflow is not supported when `SANDBOX_INSTANCE_TYPE=container`.
+Use a VM sandbox or connect to an externally configured LXD cloud instead.
+
 ## Steps
 
 1. Install prerequisites, then run the provisioning script:

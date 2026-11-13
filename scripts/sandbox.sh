@@ -9,23 +9,23 @@
 #
 # Environment / .env (optional, loaded from development-sandbox/.env):
 #   GITHUB_TOKEN               Fine-grained PAT for GitHub API access on the
-#                              host when provisioning the VM (e.g. registering
+#                              host when provisioning the sandbox (e.g. registering
 #                              the signing key). Falls back to the host's
 #                              `gh auth token` if not set.
-#   SANDBOX_VAR_GITHUB_TOKEN   Fine-grained PAT for gh CLI inside the VM.
+#   SANDBOX_VAR_GITHUB_TOKEN   Fine-grained PAT for gh CLI inside the sandbox.
 #                              Falls back to the host's `gh auth token` only
 #                              with your consent; if declined, the sandbox
 #                              continues without gh authentication.
-#   SANDBOX_VAR_COPILOT_GITHUB_TOKEN  Token for Copilot AI auth inside the VM.
+#   SANDBOX_VAR_COPILOT_GITHUB_TOKEN  Token for Copilot AI auth inside the sandbox.
 #                              Same consent-gated fallback; if declined, Copilot
 #                              is started without a token.
-#   SANDBOX_VM                 VM name override (default: charm-qa-sandbox)
-#   SANDBOX_MOUNT               VM-side mount path (default: /project)
+#   SANDBOX_VM                 Instance name override (default: charm-qa-sandbox)
+#   SANDBOX_MOUNT               Instance-side mount path (default: /project)
 #   SANDBOX_VAR_COPILOT_MODEL   Optional Copilot model override
-#   SANDBOX_VAR_<NAME>          Any var with this prefix is passed into the VM
+#   SANDBOX_VAR_<NAME>          Any var with this prefix is passed into the sandbox
 #                              as <NAME> (prefix stripped), e.g.
 #                              SANDBOX_VAR_CHARMHUB_API_URL -> CHARMHUB_API_URL
-#                              inside the VM.
+#                              inside the sandbox.
 
 set -euo pipefail
 
@@ -67,12 +67,20 @@ SANDBOX_BACKEND="${SANDBOX_BACKEND:-multipass}"
 [[ "$VM_NAME" != *"'"* ]] || { echo "ERROR: SANDBOX_VM must not contain single quotes: $VM_NAME" >&2; exit 1; }
 
 case "$SANDBOX_BACKEND" in
-    multipass|lxd)
+    multipass|lxd|lxd-container)
         # shellcheck source=/dev/null
         source "$DEV_DIR/bin/sandbox-backend-$SANDBOX_BACKEND.sh"
         ;;
     *)
-        echo "ERROR: unsupported SANDBOX_BACKEND '$SANDBOX_BACKEND' (choose multipass or lxd)." >&2
+        echo "ERROR: unsupported SANDBOX_BACKEND '$SANDBOX_BACKEND' (choose multipass, lxd, or lxd-container)." >&2
+        exit 1
+        ;;
+esac
+SANDBOX_INSTANCE_TYPE=$(sandbox_backend_instance_type)
+case "$SANDBOX_INSTANCE_TYPE" in
+    vm|container) ;;
+    *)
+        echo "ERROR: backend '$SANDBOX_BACKEND' returned unsupported instance type '$SANDBOX_INSTANCE_TYPE'." >&2
         exit 1
         ;;
 esac
@@ -94,8 +102,8 @@ _check_backend() {
 
 # Ingest every host env var prefixed with SANDBOX_VAR_, strip the prefix, and
 # append "NAME=value" entries onto the array named by $1 (nameref) for
-# passthrough into the VM via _vm_exec_with_env.
-# Example: SANDBOX_VAR_CHARMHUB_API_URL=... -> CHARMHUB_API_URL=... in the VM.
+# passthrough into the sandbox via _vm_exec_with_env.
+# Example: SANDBOX_VAR_CHARMHUB_API_URL=... -> CHARMHUB_API_URL in the sandbox.
 # Credential variables are excluded here because callers handle credential
 # mapping and fallback explicitly.
 _collect_sandbox_vars() {
@@ -105,7 +113,7 @@ _collect_sandbox_vars() {
         [[ "$_var" == SANDBOX_VAR_?* ]] || continue
         _name="${_var#SANDBOX_VAR_}"
         case "$_name" in
-            GITHUB_TOKEN|COPILOT_GITHUB_TOKEN) continue ;;
+            GITHUB_TOKEN|COPILOT_GITHUB_TOKEN|SANDBOX_INSTANCE_TYPE) continue ;;
         esac
         _target+=("$_name=${!_var}")
     done < <(compgen -e)
@@ -123,13 +131,13 @@ _cleanup_vm_temp_files() {
     return "$_status"
 }
 
-# Ensure temporary files created inside the VM are cleaned up on exit.
+# Ensure temporary files created inside the sandbox are cleaned up on exit.
 # This trap will invoke _cleanup_vm_temp_files when the script exits, regardless
 # of whether it exits normally or due to an error.
 trap _cleanup_vm_temp_files EXIT
 
 # Transfer shell-quoted exports over stdin in a separate call so the session
-# keeps its terminal, then select the VM-local project environment.
+# keeps its terminal, then select the sandbox-local project environment.
 # Only the private file's path is passed in argv.
 _vm_exec_with_env() {
     local -n _env="$1"
@@ -183,9 +191,9 @@ _confirm_host_token_use() {
         printf '  - %s\n' "$@"
         echo ""
         echo "You can pass your host 'gh auth token' into the sandbox instead. It"
-        echo "carries every permission your host gh login has. Anything running in the VM,"
+        echo "carries every permission your host gh login has. Anything running in the sandbox,"
         echo "including the AI agent, can use it to act as you on GitHub. gh also stores it"
-        echo "in the VM (~/.config/gh/hosts.yml) until it is removed."
+        echo "in the sandbox (~/.config/gh/hosts.yml) until it is removed."
         echo ""
         if [[ "$_gh_token" == ghp_* ]]; then
             echo "NOTE: your host token is a classic PAT (ghp_), which Copilot CLI does not"
@@ -223,7 +231,7 @@ _confirm_host_token_use() {
 }
 
 # Resolve GitHub credentials. They are optional: without them the sandbox still
-# runs, but gh and Copilot inside the VM are unauthenticated. The host's
+# runs, but gh and Copilot inside the sandbox are unauthenticated. The host's
 # `gh auth token` is only used with the user's consent. With --gh-only, the
 # Copilot token is not resolved (for commands that don't run Copilot).
 _require_github_auth() {
@@ -236,13 +244,13 @@ _require_github_auth() {
     local _unset=()
     if [ -z "$VM_GH_TOKEN" ]; then
         if _vm_gh_logged_in; then
-            echo "==> gh inside the VM is already authenticated; keeping the existing login."
+            echo "==> gh inside the sandbox is already authenticated; keeping the existing login."
         else
-            _unset+=("gh CLI inside the VM")
+            _unset+=("gh CLI inside the sandbox")
         fi
     fi
     if [ "$_gh_only" = "false" ] && [ -z "$COPILOT_TOKEN" ]; then
-        _unset+=("Copilot CLI inside the VM")
+        _unset+=("Copilot CLI inside the sandbox")
     fi
     [ "${#_unset[@]}" -gt 0 ] || return 0
 
@@ -257,7 +265,7 @@ _require_github_auth() {
     fi
 
     if _confirm_host_token_use "${_unset[@]}"; then
-        if [ -z "$VM_GH_TOKEN" ] && [[ " ${_unset[*]} " == *" gh CLI inside the VM "* ]]; then
+        if [ -z "$VM_GH_TOKEN" ] && [[ " ${_unset[*]} " == *" gh CLI inside the sandbox "* ]]; then
             VM_GH_TOKEN="$_gh_token"
         fi
         if [ "$_gh_only" = "false" ]; then
@@ -266,21 +274,21 @@ _require_github_auth() {
     fi
 }
 
-# Log the VM's gh CLI in with the resolved token. Piped over stdin so the token
-# never lands in the VM's process list; GH_TOKEN/GITHUB_TOKEN are unset because
+# Log the sandbox gh CLI in with the resolved token. Piped over stdin so the token
+# never lands in the sandbox's process list; GH_TOKEN/GITHUB_TOKEN are unset because
 # `gh auth login` refuses to run while they are present.
 _vm_gh_auth_login() {
     if [ -z "$VM_GH_TOKEN" ]; then
-        echo "==> No gh token provided; leaving gh authentication inside the VM unchanged."
+        echo "==> No gh token provided; leaving gh authentication inside the sandbox unchanged."
         return 0
     fi
-    echo "==> Authenticating gh inside the VM..."
+    echo "==> Authenticating gh inside the sandbox..."
     if ! printf '%s\n' "$VM_GH_TOKEN" | sandbox_backend_exec "$VM_NAME" bash -lc "
         unset GH_TOKEN GITHUB_TOKEN
         cd '$VM_MOUNT' && gh auth login --hostname github.com --with-token
     "; then
         {
-            echo "ERROR: 'gh auth login' failed inside the VM; the token is likely invalid or expired."
+            echo "ERROR: 'gh auth login' failed inside the sandbox; the token is likely invalid or expired."
             echo "       Set SANDBOX_VAR_GITHUB_TOKEN in $DEV_DIR/.env, or re-run 'gh auth login' on the host."
         } >&2
         exit 1
@@ -291,10 +299,10 @@ _usage() {
     cat <<'EOF'
 Usage:
   scripts/sandbox.sh up [--cpus N] [--memory SIZE] [--disk SIZE]
-                                               Create or resume the VM
-  scripts/sandbox.sh down                      Stop the VM (preserves state)
-  scripts/sandbox.sh destroy                   Delete the VM permanently
-  scripts/sandbox.sh shell                     Open a shell inside the VM
+                                               Create or resume the sandbox instance
+  scripts/sandbox.sh down                      Stop the instance (preserves state)
+  scripts/sandbox.sh destroy                   Delete the instance permanently
+  scripts/sandbox.sh shell                     Open a shell inside the instance
   scripts/sandbox.sh run 'task description' [-- COPILOT_ARGS...]
   scripts/sandbox.sh run --interactive [-- COPILOT_ARGS...]
   scripts/sandbox.sh --help                    Show this help
@@ -303,20 +311,20 @@ Copilot CLI arguments after -- are passed through.
 See development-sandbox/README.md for resume examples.
 
 Environment (.env keys):
-  SANDBOX_VM             VM name override (default: charm-qa-sandbox)
-  SANDBOX_BACKEND        VM provider: multipass (default) or lxd
-  SANDBOX_MOUNT          VM-side mount path (default: /project)
-  SANDBOX_LXD_REMOTE     Local LXD remote alias for the lxd backend (default: local)
-  SANDBOX_CPUS           vCPU count for new VMs (default: 8)
-  SANDBOX_MEMORY         RAM for new VMs, e.g. 8G or 16G (default: 16G)
-  SANDBOX_DISK           Disk size for new VMs, e.g. 40G or 80G (default: 80G)
+  SANDBOX_VM             Instance name override (default: charm-qa-sandbox)
+  SANDBOX_BACKEND        multipass (default), lxd (VM), or lxd-container
+  SANDBOX_MOUNT          Instance-side mount path (default: /project)
+  SANDBOX_LXD_REMOTE     Local LXD remote alias for LXD backends (default: local)
+  SANDBOX_CPUS           CPU limit for a new instance (default: 8)
+  SANDBOX_MEMORY         Memory limit for a new instance, e.g. 8G or 16G (default: 16G)
+  SANDBOX_DISK           Root disk size for a new instance, e.g. 40G or 80G (default: 80G)
   GITHUB_TOKEN           Fine-grained PAT for host-side GitHub API access
-                         when provisioning the VM (default: gh auth token)
-  SANDBOX_VAR_GITHUB_TOKEN  Fine-grained PAT for gh CLI inside the VM
+                         when provisioning the sandbox (default: gh auth token)
+  SANDBOX_VAR_GITHUB_TOKEN  Fine-grained PAT for gh CLI inside the sandbox
                          (falls back to host gh token only with consent)
   SANDBOX_VAR_COPILOT_GITHUB_TOKEN  Copilot AI auth token (same fallback)
   SANDBOX_VAR_COPILOT_MODEL  Optional Copilot model override
-  SANDBOX_VAR_<NAME>     Passed into the VM as <NAME> (prefix stripped), e.g.
+  SANDBOX_VAR_<NAME>     Passed into the sandbox as <NAME> (prefix stripped), e.g.
                          SANDBOX_VAR_CHARMHUB_API_URL -> CHARMHUB_API_URL
   SANDBOX_MCP_CONFIG_FILE  Path to an MCP server config JSON file on the host
 
@@ -327,10 +335,10 @@ Inside an interactive session use skill slash commands:
   /setup-k8s             Set up Canonical k8s substrate
   /setup-lxd             Set up LXD substrate
 
-VM resource flags (only applied when the VM does not yet exist):
-  --cpus N               vCPU count (default: SANDBOX_CPUS or 8)
-  --memory SIZE          RAM, e.g. 16G (default: SANDBOX_MEMORY or 16G)
-  --disk SIZE            Disk, e.g. 80G (default: SANDBOX_DISK or 80G)
+Instance resource flags (only applied when the instance does not yet exist):
+  --cpus N               CPU limit (default: SANDBOX_CPUS or 8)
+  --memory SIZE          Memory limit, e.g. 16G (default: SANDBOX_MEMORY or 16G)
+  --disk SIZE            Root disk size, e.g. 80G (default: SANDBOX_DISK or 80G)
 EOF
 }
 
@@ -377,12 +385,12 @@ _cmd_up() {
         esac
     done
 
-    echo "==> Checking VM state..."
+    echo "==> Checking sandbox instance state..."
     state=$(_vm_state)
 
     case "$state" in
         absent)
-            echo "==> Launching $VM_NAME (cpus=$cpus memory=$memory disk=$disk)..."
+            echo "==> Launching $VM_NAME ($SANDBOX_INSTANCE_TYPE; cpus=$cpus memory=$memory disk=$disk)..."
             sandbox_backend_launch "$VM_NAME" "$cpus" "$memory" "$disk"
             ;;
         Stopped)
@@ -393,7 +401,7 @@ _cmd_up() {
             echo "==> $VM_NAME already running."
             ;;
         *)
-            echo "==> VM is in state '$state', attempting to start..."
+            echo "==> Instance is in state '$state', attempting to start..."
             sandbox_backend_start "$VM_NAME"
             ;;
     esac
@@ -426,7 +434,7 @@ _cmd_up() {
 
     echo "==> Setting up the sandbox environment..."
     sandbox_backend_exec "$VM_NAME" bash "$VM_MOUNT/development-sandbox/bin/install-mise.sh"
-    _env_args=("PROJECT_ROOT=$VM_MOUNT")
+    _env_args=("PROJECT_ROOT=$VM_MOUNT" "SANDBOX_INSTANCE_TYPE=$SANDBOX_INSTANCE_TYPE")
     _vm_exec_with_env _env_args bash -lc "
         set -euo pipefail
         cd '$VM_MOUNT'
@@ -450,17 +458,17 @@ _cmd_up() {
 JSON
     "
 
-    # Configure git in VM: propagate host identity and install a VM-specific
-    # signing key (no passphrase, stored in .env as base64 so it survives
-    # VM recreation). The public key must be added to GitHub once as a Signing Key.
-    echo "==> Configuring git in VM..."
+    # Configure git in the sandbox: propagate host identity and install a signing
+    # key (no passphrase, stored in .env as base64 so it survives recreation).
+    # The public key must be added to GitHub once as a Signing Key.
+    echo "==> Configuring git in the sandbox..."
 
     _ENV_FILE="$DEV_DIR/.env"
     if ! grep -q '^SANDBOX_SIGNING_KEY=' "$_ENV_FILE" 2>/dev/null; then
-        echo "==> No SANDBOX_SIGNING_KEY found in $_ENV_FILE; generating a VM signing key..."
+        echo "==> No SANDBOX_SIGNING_KEY found in $_ENV_FILE; generating a sandbox signing key..."
         _tmp_key=$(mktemp)
         rm -f "$_tmp_key"
-        ssh-keygen -t ed25519 -C "sandbox-vm-signing" -N "" -f "$_tmp_key" -q
+        ssh-keygen -t ed25519 -C "sandbox-${SANDBOX_INSTANCE_TYPE}-signing" -N "" -f "$_tmp_key" -q
         _key_b64=$(base64 -w0 < "$_tmp_key")
         rm -f "$_tmp_key" "${_tmp_key}.pub"
         touch "$_ENV_FILE"
@@ -469,7 +477,7 @@ JSON
     fi
     _VM_SIGNING_KEY_B64=$(grep '^SANDBOX_SIGNING_KEY=' "$_ENV_FILE" | cut -d= -f2-)
 
-    # Install the signing key into the VM and generate the .pub file.
+    # Install the signing key into the sandbox and generate the .pub file.
     sandbox_backend_exec "$VM_NAME" install -d -m 700 /home/ubuntu/.ssh
     echo "$_VM_SIGNING_KEY_B64" | base64 -d \
         | sandbox_backend_exec "$VM_NAME" tee /home/ubuntu/.ssh/id_signing > /dev/null
@@ -478,7 +486,7 @@ JSON
         "ssh-keygen -y -f /home/ubuntu/.ssh/id_signing > /home/ubuntu/.ssh/id_signing.pub"
 
     # Build the gitconfig: propagate host identity, strip signing config,
-    # then append VM-specific signing settings.
+    # then append sandbox-specific signing settings.
     {
         git -C "$PROJECT_DIR" config --list \
             | grep -v '^includeif\.' \
@@ -511,7 +519,7 @@ JSON
     # Print the signing public key so the user can add it to GitHub.
     _signing_pub=$(sandbox_backend_exec "$VM_NAME" cat /home/ubuntu/.ssh/id_signing.pub)
     echo ""
-    echo "  *** VM signing key (add to GitHub if not already done) ***"
+    echo "  *** Sandbox signing key (add to GitHub if not already done) ***"
     echo "  https://github.com/settings/ssh  ->  New SSH key  ->  Key type: Signing Key"
     echo "  $_signing_pub"
     echo ""
@@ -536,7 +544,7 @@ JSON
         if [ "$_list_ok" -eq 0 ] && [ -t 0 ] \
             && grep -Eqi 'ssh_signing_key|missing.*scope|HTTP 40[34]' <<< "$_existing_keys"; then
             echo "==> Your gh token is missing the 'write:ssh_signing_key' scope. It is needed to"
-            echo "    check whether the VM signing key is already registered with your GitHub"
+            echo "    check whether the sandbox signing key is already registered with your GitHub"
             echo "    account, and to register it if not. No other permissions are requested."
             read -r -p "  Grant this scope now via 'gh auth refresh'? [y/N] " _refresh_list
             if [[ "$_refresh_list" =~ ^[Yy]$ ]] && gh auth refresh -h github.com -s write:ssh_signing_key; then
@@ -556,7 +564,7 @@ JSON
             echo "    Skip this if you don't intend to author commits in the sandbox."
             read -r -p "  Register the generated signing key with your GitHub account? [y/N] " _register_key
             if [[ "$_register_key" =~ ^[Yy]$ ]]; then
-                _register_err=$(gh api user/ssh_signing_keys -f "title=sandbox-vm-signing ($VM_NAME)" -f "key=$_signing_pub" 2>&1 >/dev/null)
+                _register_err=$(gh api user/ssh_signing_keys -f "title=sandbox-${SANDBOX_INSTANCE_TYPE}-signing ($VM_NAME)" -f "key=$_signing_pub" 2>&1 >/dev/null)
                 _register_rc=$?
                 if [ $_register_rc -eq 0 ]; then
                     echo "==> Signing key registered with GitHub."
@@ -569,7 +577,7 @@ JSON
                     echo "    Detail: $_register_err"
                     read -r -p "  Grant this scope now via 'gh auth refresh' and retry? [y/N] " _refresh_scope
                     if [[ "$_refresh_scope" =~ ^[Yy]$ ]] && gh auth refresh -h github.com -s write:ssh_signing_key; then
-                        _register_err=$(gh api user/ssh_signing_keys -f "title=sandbox-vm-signing ($VM_NAME)" -f "key=$_signing_pub" 2>&1 >/dev/null) || true
+                        _register_err=$(gh api user/ssh_signing_keys -f "title=sandbox-${SANDBOX_INSTANCE_TYPE}-signing ($VM_NAME)" -f "key=$_signing_pub" 2>&1 >/dev/null) || true
                         if [ -z "$_register_err" ]; then
                             echo "==> Signing key registered with GitHub."
                         else
@@ -606,7 +614,7 @@ JSON
 # ---------------------------------------------------------------------------
 _cmd_down() {
     _check_backend
-    echo "==> Stopping $VM_NAME..."
+    echo "==> Stopping sandbox instance $VM_NAME..."
     sandbox_backend_stop "$VM_NAME"
     echo "==> Done. Run 'scripts/sandbox.sh up' to resume."
 }
@@ -616,8 +624,8 @@ _cmd_down() {
 # ---------------------------------------------------------------------------
 _cmd_destroy() {
     _check_backend
-    echo "This will permanently delete VM '$VM_NAME' and all its data."
-    read -r -p "Type the VM name to confirm: " confirm
+    echo "This will permanently delete sandbox instance '$VM_NAME' and all its data."
+    read -r -p "Type the instance name to confirm: " confirm
 
     if [ "$confirm" != "$VM_NAME" ]; then
         echo "Aborted."
@@ -640,7 +648,7 @@ _cmd_shell() {
     fi
     _require_github_auth --gh-only
     _vm_gh_auth_login
-    _env_args=("PROJECT_ROOT=$VM_MOUNT")
+    _env_args=("PROJECT_ROOT=$VM_MOUNT" "SANDBOX_INSTANCE_TYPE=$SANDBOX_INSTANCE_TYPE")
     [ -n "${SANDBOX_VAR_GITHUB_TOKEN:-}" ] && _env_args+=("GH_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN" "GITHUB_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN")
     _collect_sandbox_vars _env_args
     _vm_exec_with_env _env_args bash -lc "
@@ -692,7 +700,7 @@ EOF
 
     TASK="${task_args[*]}"
 
-    # Resolve and validate SANDBOX_MCP_CONFIG_FILE path early — no VM work yet.
+    # Resolve and validate SANDBOX_MCP_CONFIG_FILE path early — no instance work yet.
     if [ -n "${SANDBOX_MCP_CONFIG_FILE:-}" ]; then
         # Resolve relative paths against the project root for consistency.
         if [[ "$SANDBOX_MCP_CONFIG_FILE" != /* ]]; then
@@ -704,7 +712,7 @@ EOF
         fi
     fi
 
-    # Validate the task argument for autonomous mode before any VM interaction.
+    # Validate the task argument for autonomous mode before any instance interaction.
     if [ "$INTERACTIVE" = "false" ]; then
         [ -n "$TASK" ] || { echo "Usage: scripts/sandbox.sh run 'task description'" >&2; exit 1; }
     fi
@@ -718,10 +726,10 @@ EOF
     _require_github_auth
     _vm_gh_auth_login
 
-    # All prerequisites met. Copy MCP config into the VM now.
+    # All prerequisites met. Copy MCP config into the sandbox now.
     _mcp_vm_file=""
     if [ -n "${SANDBOX_MCP_CONFIG_FILE:-}" ]; then
-        echo "==> Copying MCP config into VM..."
+        echo "==> Copying MCP config into sandbox..."
         _mcp_vm_file=$(sandbox_backend_exec "$VM_NAME" bash -c "mktemp /tmp/mcp-config-XXXXXX.json")
         _vm_temp_files+=("$_mcp_vm_file")
         # Pipe rather than redirect so the backend exec command gets a pipe, not a regular file.
@@ -733,6 +741,12 @@ EOF
 
     {
         cat "$PROJECT_DIR/.agents/skills/system.md"
+        printf '\n\n---\n\nSandbox instance type: %s.\n' "$SANDBOX_INSTANCE_TYPE"
+        if [[ "$SANDBOX_INSTANCE_TYPE" == container ]]; then
+            printf '%s\n' \
+                'Do not bootstrap local LXD or Kubernetes substrates from this container. Use a configured external cloud or switch to a VM sandbox.' \
+                'Do not enable nested LXD, Docker, or Kubernetes services in this container.'
+        fi
         if [ -n "$TASK" ]; then
             printf "\n\n---\n\nTask: %s\n" "$TASK"
         fi
@@ -741,7 +755,7 @@ EOF
     if [ "$INTERACTIVE" = "true" ]; then
         CONTEXT_MSG="Please read $PROMPT_FILE for project context, then await my instructions."
         # Build env var array, only including GH_TOKEN/GITHUB_TOKEN if they are actually set
-        _env_args=("PROJECT_ROOT=$VM_MOUNT")
+        _env_args=("PROJECT_ROOT=$VM_MOUNT" "SANDBOX_INSTANCE_TYPE=$SANDBOX_INSTANCE_TYPE")
         [ -n "$COPILOT_TOKEN" ] && _env_args+=("COPILOT_GITHUB_TOKEN=$COPILOT_TOKEN")
         [ -n "${SANDBOX_VAR_GITHUB_TOKEN:-}" ] && _env_args+=("GH_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN" "GITHUB_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN")
         [ -n "$_mcp_vm_file" ] && _env_args+=("SANDBOX_MCP_VM_CONFIG=$_mcp_vm_file")
@@ -757,7 +771,7 @@ EOF
         " bash "${copilot_args[@]}"
     else
         # Build env var array, only including GH_TOKEN/GITHUB_TOKEN if they are actually set
-        _env_args=("PROJECT_ROOT=$VM_MOUNT")
+        _env_args=("PROJECT_ROOT=$VM_MOUNT" "SANDBOX_INSTANCE_TYPE=$SANDBOX_INSTANCE_TYPE")
         [ -n "$COPILOT_TOKEN" ] && _env_args+=("COPILOT_GITHUB_TOKEN=$COPILOT_TOKEN")
         [ -n "${SANDBOX_VAR_GITHUB_TOKEN:-}" ] && _env_args+=("GH_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN" "GITHUB_TOKEN=$SANDBOX_VAR_GITHUB_TOKEN")
         [ -n "$_mcp_vm_file" ] && _env_args+=("SANDBOX_MCP_VM_CONFIG=$_mcp_vm_file")

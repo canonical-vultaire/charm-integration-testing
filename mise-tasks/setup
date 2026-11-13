@@ -161,6 +161,23 @@ if [[ "$project" != none ]]; then
 fi
 [[ "$no_packages" == false ]] || packages=()
 
+if [[ "${SANDBOX_INSTANCE_TYPE:-vm}" == container ]]; then
+    for group in "${groups[@]}"; do
+        case "$group" in
+            local-k8s|local-lxd)
+                die "The $group setup group provisions a local substrate and is not supported in a container sandbox; use a VM backend or an external cloud."
+                ;;
+        esac
+    done
+    for package in "${packages[@]}"; do
+        case "$package" in
+            snap:k8s|snap:lxd)
+                die "Installing $package in a container sandbox is not supported; use a VM backend or an external cloud."
+                ;;
+        esac
+    done
+fi
+
 if (( ${#groups[@]} + ${#tools[@]} + ${#packages[@]} == 0 )); then
     usage >&2
     die "Specify at least one group, tool or package"

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+sandbox_backend_instance_type() {
+    printf 'vm\n'
+}
+
 sandbox_backend_check() {
     command -v multipass >/dev/null || {
         echo "ERROR: Multipass is required for SANDBOX_BACKEND=multipass." >&2

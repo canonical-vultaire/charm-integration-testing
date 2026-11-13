@@ -19,6 +19,11 @@
 
 set -euo pipefail
 
+if [[ "${SANDBOX_INSTANCE_TYPE:-vm}" == container ]]; then
+    echo "ERROR: local Kubernetes provisioning is not supported in the container sandbox; use a VM sandbox or an external cluster." >&2
+    exit 1
+fi
+
 die() {
     echo "ERROR: $*" >&2
     exit 1

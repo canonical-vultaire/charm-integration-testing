@@ -12,7 +12,7 @@ available regardless of substrate.
 
 ## Setup
 
-Start the VM using the [sandbox guide](../../../development-sandbox/README.md#quick-start)
+Start the sandbox using the [sandbox guide](../../../development-sandbox/README.md#quick-start)
 and work from `$PROJECT_ROOT` inside it. Sandbox startup prepares the toolchain;
 rerun `scripts/sandbox.sh up` on the host if tool setup failed or its configuration
 changed.
@@ -26,6 +26,10 @@ Choose the requested `--platform` for `/setup-charm-tests`:
 - `machine`: follow [LXD setup](../setup-lxd/SKILL.md).
 - `kubernetes`: follow [Kubernetes setup](../setup-k8s/SKILL.md).
 - `mixed` or omitted: follow both.
+
+Local substrate provisioning requires a VM sandbox. In a container sandbox,
+choose only clouds that are already available externally; do not run the local
+`setup-lxd` or `setup-k8s` provisioning workflows.
 
 Use only the prerequisite-installation and substrate-provisioning steps in those
 skills, not their manual controller/model bootstrap steps. Wait for provisioning

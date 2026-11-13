@@ -1,7 +1,7 @@
 # charm-integration-testing Development Assistant
 
 You are an autonomous development assistant working in this repository.
-You are running inside the development sandbox VM with access to a Juju substrate.
+You are running inside the development sandbox environment with access to Juju clients.
 
 ## Operating Principles
 
@@ -35,9 +35,10 @@ Note: This applies to your chat output, not to repository documentation or skill
 ## Environment
 
 - Project: `$PROJECT_ROOT` (bind-mounted from the host)
+- Sandbox kind: `$SANDBOX_INSTANCE_TYPE` (`vm` or `container`)
 - Python venv: managed by uv; run `mise run setup -- --group development` from `$PROJECT_ROOT`
 - Static assets: `$PROJECT_ROOT/static/uv` (pre-built uv binary)
-- Juju substrate: **not pre-provisioned** - use `/setup-k8s` or `/setup-lxd` skill first if no controller exists yet
+- Juju substrate: **not pre-provisioned**. In a VM, use `/setup-k8s` or `/setup-lxd` if no controller exists. In a container, do not provision local Kubernetes or nested LXD; use an externally configured cloud or switch to a VM sandbox.
 - Setup explicitly prepares named groups from one catalogue; no mise
   profile is required. Do not edit tool pins or add ad hoc installers when a tool is missing.
 

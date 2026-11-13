@@ -22,6 +22,8 @@ This skill bridges the gap between:
 Use [setup-charm-tests](../setup-charm-tests/SKILL.md) to prepare the required
 substrates and logging tools. Run commands from `$PROJECT_ROOT` inside the
 sandbox. The test suite creates controllers according to `--current-state`.
+When `SANDBOX_INSTANCE_TYPE=container`, use only cloud targets already configured
+outside the sandbox; local LXD/Kubernetes provisioning requires a VM sandbox.
 
 ## Quick Start
 

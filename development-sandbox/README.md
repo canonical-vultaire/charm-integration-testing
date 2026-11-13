@@ -1,8 +1,9 @@
 # Development Sandbox
 
-A VM with Copilot and development tools for charm integration testing. Multipass
-is the default VM backend; Ubuntu hosts with LXD can select LXD instead. Your
-checkout is mounted into the VM, so edits are visible on the host.
+A sandbox instance with Copilot and development tools for charm integration
+testing. Multipass remains the default; LXD can provide either a VM or an
+unprivileged container. Your checkout is mounted into the instance, so edits are
+visible on the host.
 
 ## Quick start
 
@@ -17,19 +18,27 @@ scripts/sandbox.sh up
 scripts/sandbox.sh run --interactive
 ```
 
-For LXD, set `SANDBOX_BACKEND=lxd` in `development-sandbox/.env` before running
-`up`. The host must have LXD 5.21 or newer initialized, a default storage pool
-configured, and the current user authorized to use the local LXD daemon. The
-LXD remote alias defaults to `local`; override it with `SANDBOX_LXD_REMOTE` if
-your local daemon uses another alias. Do not select a remote LXD server, because
-the project mount uses a host path.
+For LXD, set `SANDBOX_BACKEND=lxd` or `SANDBOX_BACKEND=lxd-container` in
+`development-sandbox/.env` before running `up`. The host must have LXD 5.21 or
+newer initialized, a default storage pool configured, and the current user
+authorized to use the local LXD daemon. The LXD remote alias defaults to `local`;
+override it with `SANDBOX_LXD_REMOTE` if needed. Do not select a remote server,
+because the project mount uses a host path.
 
-To keep that host-path mount writable in both directions, the LXD backend aligns
-the VM's `ubuntu` UID/GID with the host account on first setup. That identity is
-pinned to the VM; use a different `SANDBOX_VM` for another host account.
+Both LXD backends align the guest `ubuntu` UID/GID with the host account on
+first setup, and pin that identity to the instance. Use a different
+`SANDBOX_VM` for another host account. The VM backend shares the host path
+directly; the `lxd-container` backend uses LXD's shifted mount to provide that
+mapping in an unprivileged container. It installs `sudo` and `snapd` but does
+not enable nested LXD, Docker, or Kubernetes services. The host kernel and
+project filesystem must support LXD's shifted/idmapped mounts. Container
+sandboxes are for development and remote-cloud workflows; local
+`/setup-lxd` and `/setup-k8s` provisioning requires a VM. Use a different
+`SANDBOX_VM` name when switching between an LXD VM and container, because they
+share an instance namespace.
 
-This selects LXD as the host-side VM provider. The `/setup-lxd` workflow remains
-separate; it configures the LXD substrate inside the sandbox VM for Juju testing.
+The `lxd` backend selects an LXD VM as the sandbox. Inside that VM,
+`/setup-lxd` can configure a separate local LXD substrate for Juju testing.
 
 Ask Copilot to develop or test a validator, reproduce a failure, or review a PR.
 Skills such as `/setup-k8s`, `/setup-lxd`, `/develop-validator`, and `/test-validator`
@@ -45,20 +54,21 @@ Use `--resume [SESSION]` (or `-r`) to resume a session; without a value, it open
 the session picker. `--continue` resumes the most recent session. See `copilot --help`
 inside the sandbox for other CLI arguments.
 
-Run `scripts/sandbox.sh --help` for VM lifecycle and agent options.
+Run `scripts/sandbox.sh --help` for sandbox lifecycle and agent options.
 
-## VM setup
+## Instance setup
 
-`up` installs the stable Mise Snap, then prepares the VM toolchain from the
+`up` installs the stable Mise Snap, then prepares the sandbox toolchain from the
 repository catalogue.
 
 `scripts/sandbox.sh up`, `run`, and `shell` set `UV_PROJECT_ENVIRONMENT` to store
 Python dependencies under
 `~/.local/share/charm-integration-testing/venvs/<checkout-path-hash>` (or
 `$XDG_DATA_HOME/charm-integration-testing/venvs/<checkout-path-hash>` when set).
-The hash uses the canonical VM checkout path, so different mounts have separate
-environments. Each shell or agent session keeps the environment for its mount;
-use the other checkout's `scripts/sandbox.sh shell` or `run` to work on that project.
+The hash uses the canonical instance checkout path, so different mounts have
+separate environments. Each shell or agent session keeps the environment for
+its mount; use the other checkout's `scripts/sandbox.sh shell` or `run` to work
+on that project.
 Host commands continue using the checkout's `.venv`; sandbox setup leaves it
 untouched. Run `scripts/sandbox.sh up` again to configure an existing sandbox.
 
@@ -81,14 +91,15 @@ Set options in `development-sandbox/.env` (gitignored). See
 | `SANDBOX_VAR_GITHUB_TOKEN` | Fine-grained PAT; recommended permissions below |
 | `SANDBOX_VAR_COPILOT_GITHUB_TOKEN` | Token for Copilot authentication |
 | `SANDBOX_VAR_COPILOT_MODEL` | Optional model override; otherwise Copilot CLI uses its default |
-| `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_DISK` | VM sizing at creation (defaults: `8` / `16G` / `80G`) |
-| `SANDBOX_BACKEND` | VM backend: `multipass` (default) or `lxd` |
-| `SANDBOX_LXD_REMOTE` | Local LXD remote alias for the LXD backend (default: `local`) |
-| `SANDBOX_VM` / `SANDBOX_MOUNT` | VM name and mount path; use a unique mount path for each checkout sharing a VM |
+| `SANDBOX_CPUS` / `SANDBOX_MEMORY` / `SANDBOX_DISK` | Instance limits at creation (defaults: `8` / `16G` / `80G`) |
+| `SANDBOX_BACKEND` | `multipass` (default), `lxd` VM, or `lxd-container` |
+| `SANDBOX_LXD_REMOTE` | Local LXD remote alias (default: `local`) |
+| `SANDBOX_VM` / `SANDBOX_MOUNT` | Instance name and mount path; use a unique mount path for each checkout sharing an instance |
 
-The backends manage separate VMs even when they use the same VM name. Select the
-same backend for `up`, `shell`, `run`, `down`, and `destroy`. `destroy` permanently
-removes the VM from the selected backend.
+Multipass and LXD maintain separate instance namespaces; LXD VMs and containers
+share one, so give them different names. Select the same backend for `up`,
+`shell`, `run`, `down`, and `destroy`. `destroy` permanently removes the instance
+from the selected backend.
 
 For read-only tasks, limit `SANDBOX_VAR_GITHUB_TOKEN` to the repositories you need:
 

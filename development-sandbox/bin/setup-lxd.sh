@@ -18,6 +18,11 @@
 
 set -euo pipefail
 
+if [[ "${SANDBOX_INSTANCE_TYPE:-vm}" == container ]]; then
+    echo "ERROR: nested LXD provisioning is not supported in the container sandbox; use a VM sandbox or an external LXD cloud." >&2
+    exit 1
+fi
+
 for tool in lxd lxc juju; do
     if ! command -v "$tool" >/dev/null; then
         echo "Missing $tool; run: mise run setup -- --group local-lxd" >&2

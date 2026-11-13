@@ -11,6 +11,10 @@ Prepare Canonical k8s, register the local-k8s Juju cloud, and install or
 check Chaos Mesh. Run these steps inside the sandbox VM, not on shared CI
 clusters. Setup does not create chaos experiments.
 
+This local provisioning workflow is not supported when
+`SANDBOX_INSTANCE_TYPE=container`. Use a VM sandbox or connect to an existing
+external Kubernetes cluster instead.
+
 ## Set up Kubernetes
 
 1. Install prerequisites, then run the provisioning script:
