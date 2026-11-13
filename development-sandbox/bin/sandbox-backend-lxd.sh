@@ -140,7 +140,7 @@ fi
 
 uid_entry=$(getent passwd "$host_uid" || true)
 if [[ -n "$uid_entry" && "${uid_entry%%:*}" != ubuntu ]]; then
-    echo "ERROR: host UID $host_uid belongs to '${uid_entry%%:*}' in the LXD VM; cannot align ubuntu." >&2
+    echo "ERROR: host UID $host_uid belongs to ${uid_entry%%:*} in the LXD VM; cannot align ubuntu." >&2
     exit 1
 fi
 
